@@ -1,6 +1,6 @@
 <script>
 /** 
- * 修正版前端邏輯 (v3.0 - 含年報與 Excel 下載)
+ * 修正版前端邏輯 (v4.0 - 全面支援年報與雙下載)
  */
 const App = {
   token: localStorage.getItem("authToken"),
@@ -18,19 +18,22 @@ const App = {
     const mStr = `${this.currentYear}-${String(this.currentMonth).padStart(2,'0')}`;
     const elHist = document.getElementById('history-month');
     const elRep = document.getElementById('report-month');
-    const elYear = document.getElementById('report-year');
     
     if(elHist) elHist.value = mStr;
     if(elRep) elRep.value = mStr;
     
-    // 填入年份選單 (前後 5 年)
-    if(elYear) {
+    // 填入年份選單 (前後 5 年) - 包含明細與報表兩個選單
+    const yearOpts = (targetId) => {
+      const el = document.getElementById(targetId);
+      if(!el) return;
       let opts = '';
       for(let y = this.currentYear - 2; y <= this.currentYear + 2; y++) {
         opts += `<option value="${y}" ${y===this.currentYear?'selected':''}>${y}年</option>`;
       }
-      elYear.innerHTML = opts;
-    }
+      el.innerHTML = opts;
+    };
+    yearOpts('report-year');
+    yearOpts('history-year');
 
     if (this.token) {
       this.verifyToken();
@@ -49,20 +52,14 @@ const App = {
     bind('link-to-login', () => UI.toggleAuth('login'));
     bind('btn-login', () => this.auth('loginUser'));
     bind('btn-register', () => this.auth('handleRegister'));
-    
-    bind('btn-logout', () => { 
-      localStorage.removeItem("authToken"); 
-      location.reload(); 
-    });
+    bind('btn-logout', () => { localStorage.removeItem("authToken"); location.reload(); });
 
     const formEntry = document.getElementById('form-entry');
     if(formEntry) formEntry.onsubmit = (e) => { e.preventDefault(); this.submitEntry(); };
-
     const entryFile = document.getElementById('entry-file');
     if(entryFile) entryFile.onchange = (e) => this.readFile(e.target, 'uploadFile');
 
     bind('btn-save-edit', () => this.submitEdit());
-    
     const editFile = document.getElementById('edit-file');
     if(editFile) editFile.onchange = (e) => this.readFile(e.target, 'editFile');
 
@@ -70,32 +67,43 @@ const App = {
       btn.onclick = (e) => { e.preventDefault(); UI.switchTab(e.currentTarget); };
     });
 
-    const histMonth = document.getElementById('history-month');
-    if(histMonth) histMonth.onchange = (e) => Data.loadTransactions(e.target.value);
+    // --- 明細頁面事件 (新) ---
+    const toggleHistType = () => {
+      const isMonth = document.getElementById('hrt-month').checked;
+      document.getElementById('history-month').classList.toggle('d-none', !isMonth);
+      document.getElementById('history-year').classList.toggle('d-none', isMonth);
+      Data.triggerLoadHistory();
+    };
+    const hrtMonth = document.getElementById('hrt-month');
+    const hrtYear = document.getElementById('hrt-year');
+    if(hrtMonth) hrtMonth.onchange = toggleHistType;
+    if(hrtYear) hrtYear.onchange = toggleHistType;
 
-    // --- 報表相關事件 ---
-    
-    // 1. 切換月報/年報
+    const histMonth = document.getElementById('history-month');
+    if(histMonth) histMonth.onchange = () => Data.triggerLoadHistory();
+    const histYear = document.getElementById('history-year');
+    if(histYear) histYear.onchange = () => Data.triggerLoadHistory();
+
+    bind('btn-download-history-excel', () => Data.downloadHistoryExcel());
+
+    // --- 報表頁面事件 ---
     const toggleReportType = () => {
       const isMonth = document.getElementById('rt-month').checked;
       document.getElementById('report-month').classList.toggle('d-none', !isMonth);
       document.getElementById('report-year').classList.toggle('d-none', isMonth);
-      Data.triggerLoadReport(); // 切換時自動重整
+      Data.triggerLoadReport();
     };
     const rtMonth = document.getElementById('rt-month');
     const rtYear = document.getElementById('rt-year');
     if(rtMonth) rtMonth.onchange = toggleReportType;
     if(rtYear) rtYear.onchange = toggleReportType;
 
-    // 2. 日期/年份改變時重整
     const repMonth = document.getElementById('report-month');
     if(repMonth) repMonth.onchange = () => Data.triggerLoadReport();
-    
     const repYearSelect = document.getElementById('report-year');
     if(repYearSelect) repYearSelect.onchange = () => Data.triggerLoadReport();
 
-    // 3. 下載 Excel
-    bind('btn-download-excel', () => Data.downloadExcel());
+    bind('btn-download-excel', () => Data.downloadReportExcel());
     
     bind('btn-refresh-admin', () => Data.loadAdmin());
   },
@@ -105,13 +113,8 @@ const App = {
     google.script.run
       .withSuccessHandler(res => {
         UI.loading(false);
-        if (res.valid) { 
-          this.user = res; 
-          UI.initDashboard(res); 
-        } else {
-          localStorage.removeItem("authToken");
-          UI.showPage('auth');
-        }
+        if (res.valid) { this.user = res; UI.initDashboard(res); } 
+        else { localStorage.removeItem("authToken"); UI.showPage('auth'); }
       })
       .withFailureHandler(UI.error)
       .verifyToken(this.token);
@@ -122,28 +125,17 @@ const App = {
     const email = document.getElementById(isLogin ? 'login-email' : 'reg-email').value;
     const pass = document.getElementById(isLogin ? 'login-password' : 'reg-password').value;
     const name = !isLogin ? document.getElementById('reg-name').value : null;
-    
     if(!email || !pass) { alert("請輸入完整資料"); return; }
-
     UI.loading(true);
     google.script.run
       .withSuccessHandler(res => {
         UI.loading(false);
         if (res.success) {
-          if(isLogin) { 
-            localStorage.setItem("authToken", res.token); 
-            this.token = res.token; 
-            this.verifyToken(); 
-          } else { 
-            alert(res.message); 
-            UI.toggleAuth('login'); 
-          }
-        } else {
-          alert(res.message);
-        }
+          if(isLogin) { localStorage.setItem("authToken", res.token); this.token = res.token; this.verifyToken(); } 
+          else { alert(res.message); UI.toggleAuth('login'); }
+        } else { alert(res.message); }
       })
-      .withFailureHandler(UI.error)
-      [method](email, pass, name);
+      .withFailureHandler(UI.error)[method](email, pass, name);
   },
 
   readFile: function(input, targetVar) {
@@ -160,7 +152,6 @@ const App = {
     f.fileData = this.uploadFile ? this.uploadFile.data : null;
     f.fileName = this.uploadFile ? this.uploadFile.name : null;
     f.mimeType = this.uploadFile ? this.uploadFile.type : null;
-    
     UI.loading(true);
     google.script.run
       .withSuccessHandler(res => {
@@ -172,43 +163,25 @@ const App = {
           document.getElementById('entry-date').valueAsDate=new Date(); 
         }
       })
-      .withFailureHandler(UI.error)
-      .saveTransaction(this.token, f);
+      .withFailureHandler(UI.error).saveTransaction(this.token, f);
   },
 
   prepareEdit: function(rowJson) {
     const r = JSON.parse(decodeURIComponent(rowJson));
     const setValue = (id, v) => { const el = document.getElementById(id); if(el) el.value = v; };
-    
-    setValue('edit-id', r.id);
-    setValue('edit-date', r.date);
-    setValue('edit-type', r.type);
-    setValue('edit-amount', r.amount);
-    setValue('edit-category', r.category);
-    setValue('edit-sub', r.subCategory);
-    setValue('edit-payment', r.payment);
-    setValue('edit-memo', r.memo);
-    
-    this.editFile = null; 
-    setValue('edit-file', "");
-    
+    setValue('edit-id', r.id); setValue('edit-date', r.date); setValue('edit-type', r.type);
+    setValue('edit-amount', r.amount); setValue('edit-category', r.category);
+    setValue('edit-sub', r.subCategory); setValue('edit-payment', r.payment); setValue('edit-memo', r.memo);
+    this.editFile = null; setValue('edit-file', "");
     const modalEl = document.getElementById('modal-edit');
-    if(modalEl) {
-      const modal = new bootstrap.Modal(modalEl);
-      modal.show();
-    }
+    if(modalEl) { const modal = new bootstrap.Modal(modalEl); modal.show(); }
   },
 
   submitEdit: function() {
     if(!confirm("確定更新此筆資料?")) return;
     const id = document.getElementById('edit-id').value;
     const f = UI.getForm('edit');
-    if (this.editFile) {
-      f.fileData = this.editFile.data;
-      f.fileName = this.editFile.name;
-      f.mimeType = this.editFile.type;
-    }
-
+    if (this.editFile) { f.fileData = this.editFile.data; f.fileName = this.editFile.name; f.mimeType = this.editFile.type; }
     UI.loading(true);
     google.script.run
       .withSuccessHandler(res => {
@@ -218,26 +191,16 @@ const App = {
           const modalEl = document.getElementById('modal-edit');
           const modal = bootstrap.Modal.getInstance(modalEl);
           if(modal) modal.hide();
-          Data.loadTransactions(document.getElementById('history-month').value);
+          Data.triggerLoadHistory();
         }
       })
-      .withFailureHandler(UI.error)
-      .updateTransaction(this.token, id, f);
+      .withFailureHandler(UI.error).updateTransaction(this.token, id, f);
   }
 };
 
 const UI = {
-  loading: (s) => {
-    const overlay = document.getElementById('loading-overlay');
-    if(overlay) overlay.classList.toggle('d-none', !s);
-  },
-  
-  error: (e) => { 
-    UI.loading(false); 
-    console.error(e);
-    alert("系統發生錯誤: " + e.message); 
-  },
-  
+  loading: (s) => { const o = document.getElementById('loading-overlay'); if(o) o.classList.toggle('d-none', !s); },
+  error: (e) => { UI.loading(false); console.error(e); alert("系統發生錯誤: " + e.message); },
   showPage: (p) => {
     document.getElementById('page-auth').classList.toggle('d-none', p!=='auth');
     document.getElementById('page-dashboard').classList.toggle('d-none', p!=='dashboard');
@@ -246,19 +209,14 @@ const UI = {
     document.getElementById('form-login').classList.toggle('d-none', m!=='login');
     document.getElementById('form-register').classList.toggle('d-none', m!=='register');
   },
-
   initDashboard: (u) => {
     UI.showPage('dashboard');
     document.getElementById('display-username').textContent = u.name;
     document.getElementById('display-role').textContent = u.role;
-    if(u.role==='Admin') {
-      const navAdmin = document.getElementById('nav-admin');
-      if(navAdmin) navAdmin.classList.remove('d-none');
-    }
+    if(u.role==='Admin') { const n = document.getElementById('nav-admin'); if(n) n.classList.remove('d-none'); }
     document.getElementById('entry-date').valueAsDate = new Date();
     Data.loadSettings();
   },
-
   switchTab: (btn) => {
     document.querySelectorAll('.nav-link').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
@@ -266,12 +224,10 @@ const UI = {
     const tid = btn.getAttribute('data-target');
     const targetDiv = document.getElementById(tid);
     if(targetDiv) targetDiv.classList.remove('d-none');
-    
-    if(tid==='view-history') Data.loadTransactions(document.getElementById('history-month').value);
-    if(tid==='view-report') Data.triggerLoadReport(); // 切換時讀取報表
+    if(tid==='view-history') Data.triggerLoadHistory();
+    if(tid==='view-report') Data.triggerLoadReport();
     if(tid==='view-admin') Data.loadAdmin();
   },
-
   getForm: (prefix) => ({
     date: document.getElementById(prefix+'-date').value,
     type: document.getElementById(prefix+'-type').value,
@@ -281,7 +237,6 @@ const UI = {
     payment: document.getElementById(prefix+'-payment').value,
     memo: document.getElementById(prefix+'-memo').value
   }),
-
   popSel: (ids, list) => ids.forEach(id => {
     const el = document.getElementById(id);
     if(el) {
@@ -290,7 +245,6 @@ const UI = {
       if(val) el.value = val;
     }
   }),
-
   renderHistory: (d) => {
     const tb = document.getElementById('tbody-history');
     if(!d.length) { tb.innerHTML='<tr><td colspan="3" class="text-center text-muted">無資料</td></tr>'; return; }
@@ -307,38 +261,22 @@ const UI = {
       </tr>`;
     }).join('');
   },
-
   renderReport: (d) => {
     document.getElementById('rpt-income').textContent = d.income;
     document.getElementById('rpt-expense').textContent = d.expense;
     document.getElementById('rpt-balance').textContent = d.balance;
-
-    // 條狀圖渲染 Helper
     const renderBars = (containerId, list, colorClass) => {
       const box = document.getElementById(containerId);
-      if(!list.length) { 
-        box.innerHTML = '<div class="text-center text-muted small py-3">無資料</div>'; 
-        return; 
-      }
+      if(!list.length) { box.innerHTML = '<div class="text-center text-muted small py-3">無資料</div>'; return; }
       const max = list[0].value || 1;
       box.innerHTML = list.map(c => `
-        <div class="mb-2">
-          <div class="d-flex justify-content-between small">
-            <span>${c.name}</span>
-            <span>$${c.value}</span>
-          </div>
-          <div class="progress" style="height: 6px;">
-            <div class="progress-bar ${colorClass}" style="width: ${(c.value/max)*100}%"></div>
-          </div>
-        </div>
+        <div class="mb-2"><div class="d-flex justify-content-between small"><span>${c.name}</span><span>$${c.value}</span></div>
+          <div class="progress" style="height: 6px;"><div class="progress-bar ${colorClass}" style="width: ${(c.value/max)*100}%"></div></div></div>
       `).join('');
     };
-
-    // 分別渲染收入(綠色)與支出(紅色)
     renderBars('rpt-cats-exp', d.categories, 'bg-danger');
     renderBars('rpt-cats-inc', d.incomeCategories, 'bg-success');
   },
-
   renderAdmin: (d) => {
     document.getElementById('tbody-admin').innerHTML = d.map(u => {
       const isSelf = u.id === App.user.uid;
@@ -349,12 +287,8 @@ const UI = {
         else if(u.role!=='Admin') {
            const next = u.role==='Editor'?'Viewer':'Editor';
            btns = `<button class="btn btn-sm btn-outline-secondary" onclick="Data.adminUpdate('${u.id}','update','${next}')">轉${next}</button>` + delBtn;
-        } else {
-           btns = delBtn;
-        }
-      } else {
-        btns = '<span class="text-muted small">自己</span>';
-      }
+        } else { btns = delBtn; }
+      } else { btns = '<span class="text-muted small">自己</span>'; }
       return `<tr><td>${u.name}<br><small>${u.username}</small></td><td>${u.role}</td><td>${btns}</td></tr>`;
     }).join('');
   }
@@ -367,102 +301,87 @@ const Data = {
       UI.popSel(['entry-type','edit-type'], res.types);
       UI.popSel(['entry-category','edit-category'], res.categories);
       UI.popSel(['entry-payment','edit-payment'], res.payments);
-    })
-    .withFailureHandler(UI.error)
-    .getSettingsData(App.token),
+    }).withFailureHandler(UI.error).getSettingsData(App.token),
 
-  loadTransactions: (ymStr) => {
-    if(!ymStr) return;
-    const [y, m] = ymStr.split('-');
-    const tb = document.getElementById('tbody-history');
-    if(tb) tb.innerHTML='<tr><td colspan="3" class="text-center">載入中...</td></tr>';
-    google.script.run
-      .withSuccessHandler(UI.renderHistory)
-      .withFailureHandler(UI.error)
-      .getTransactionsByMonth(App.token, y, m);
-  },
-
-  // 取得目前報表參數 (年與月)
-  getReportParams: () => {
-    const isMonth = document.getElementById('rt-month').checked;
+  // 取得共用的參數 (給明細或下載使用)
+  getParams: (typePrefix) => { // typePrefix: 'hrt' for history, 'rt' for report
+    const isMonth = document.getElementById(typePrefix + '-month').checked;
+    const suffix = typePrefix === 'hrt' ? 'history' : 'report';
     if (isMonth) {
-      const val = document.getElementById('report-month').value;
+      const val = document.getElementById(suffix + '-month').value;
       if(!val) return null;
       const [y, m] = val.split('-');
       return { y, m };
     } else {
-      const y = document.getElementById('report-year').value;
+      const y = document.getElementById(suffix + '-year').value;
       return { y, m: 'ALL' };
     }
   },
 
-  // 觸發報表讀取
-  triggerLoadReport: () => {
-    const p = Data.getReportParams();
+  triggerLoadHistory: () => {
+    const p = Data.getParams('hrt');
     if(!p) return;
-    
-    // 簡單的 Loading 提示
-    document.getElementById('rpt-cats-inc').innerHTML = '<div class="text-center small">讀取中...</div>';
-    document.getElementById('rpt-cats-exp').innerHTML = '<div class="text-center small">讀取中...</div>';
-    
+    const tb = document.getElementById('tbody-history');
+    if(tb) tb.innerHTML='<tr><td colspan="3" class="text-center">載入中...</td></tr>';
     google.script.run
-      .withSuccessHandler(res => { UI.renderReport(res); })
-      .withFailureHandler(UI.error)
-      .getReportData(App.token, p.y, p.m);
+      .withSuccessHandler(UI.renderHistory).withFailureHandler(UI.error)
+      .getTransactionsByMonth(App.token, p.y, p.m);
   },
 
-  // 下載 Excel
-  downloadExcel: () => {
-    const p = Data.getReportParams();
+  downloadHistoryExcel: () => {
+    const p = Data.getParams('hrt');
     if(!p) return;
-    
     const label = p.m === 'ALL' ? `${p.y}年全年度` : `${p.y}年${p.m}月`;
-    if(!confirm(`確定要下載 [${label}] 的報表嗎？`)) return;
-
+    if(!confirm(`確定要下載 [${label}] 的收支明細嗎？`)) return;
     UI.loading(true);
     google.script.run
-      .withSuccessHandler(res => {
-        UI.loading(false);
-        // 建立隱藏連結並自動點擊
-        const a = document.createElement("a");
-        a.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," + res.base64;
-        a.download = res.filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      })
-      .withFailureHandler(UI.error)
-      .downloadReportExcel(App.token, p.y, p.m);
+      .withSuccessHandler(res => Data.handleDownload(res))
+      .withFailureHandler(UI.error).downloadHistoryExcel(App.token, p.y, p.m);
+  },
+
+  triggerLoadReport: () => {
+    const p = Data.getParams('rt');
+    if(!p) return;
+    UI.loading(true); // 避免畫面閃爍，報表用全頁 loading
+    google.script.run
+      .withSuccessHandler(res => { UI.loading(false); UI.renderReport(res); })
+      .withFailureHandler(UI.error).getReportData(App.token, p.y, p.m);
+  },
+
+  downloadReportExcel: () => {
+    const p = Data.getParams('rt');
+    if(!p) return;
+    const label = p.m === 'ALL' ? `${p.y}年全年度` : `${p.y}年${p.m}月`;
+    if(!confirm(`確定要下載 [${label}] 的財務報表嗎？`)) return;
+    UI.loading(true);
+    google.script.run
+      .withSuccessHandler(res => Data.handleDownload(res))
+      .withFailureHandler(UI.error).downloadReportExcel(App.token, p.y, p.m);
+  },
+
+  handleDownload: (res) => {
+    UI.loading(false);
+    const a = document.createElement("a");
+    a.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," + res.base64;
+    a.download = res.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   },
 
   delItem: (id) => {
     if(!confirm("確定刪除?")) return;
     UI.loading(true);
     google.script.run
-      .withSuccessHandler(res => {
-        UI.loading(false);
-        Data.loadTransactions(document.getElementById('history-month').value);
-      })
-      .withFailureHandler(UI.error)
-      .deleteTransaction(App.token, id);
+      .withSuccessHandler(() => Data.triggerLoadHistory())
+      .withFailureHandler(UI.error).deleteTransaction(App.token, id);
   },
-
-  loadAdmin: () => google.script.run
-    .withSuccessHandler(UI.renderAdmin)
-    .withFailureHandler(UI.error)
-    .getAllUsers(App.token),
-  
+  loadAdmin: () => google.script.run.withSuccessHandler(UI.renderAdmin).withFailureHandler(UI.error).getAllUsers(App.token),
   adminUpdate: (uid, act, role) => {
-    if(!confirm(act==='delete'?"確定刪除此使用者?":"確定變更權限?")) return;
+    if(!confirm(act==='delete'?"確定刪除?" : "確定變更?")) return;
     UI.loading(true);
-    google.script.run
-      .withSuccessHandler(res => {
-        UI.loading(false);
-        alert(res.message);
-        Data.loadAdmin();
-      })
-      .withFailureHandler(UI.error)
-      .adminUpdateUser(App.token, uid, act, role);
+    google.script.run.withSuccessHandler(res => { UI.loading(false); alert(res.message); Data.loadAdmin(); })
+      .withFailureHandler(UI.error).adminUpdateUser(App.token, uid, act, role);
   }
 };
 
