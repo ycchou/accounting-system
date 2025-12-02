@@ -1,7 +1,6 @@
 <script>
 /** 
- * 修正版前端邏輯 (v2.1)
- * 修復圖片上傳時「找不到 split」的錯誤 (修正變數名稱 mismatch)
+ * 修正版前端邏輯 (v3.0 - 含年報與 Excel 下載)
  */
 const App = {
   token: localStorage.getItem("authToken"),
@@ -15,11 +14,23 @@ const App = {
   init: function() {
     this.bindEvents();
     
+    // 初始化日期與年份選單
     const mStr = `${this.currentYear}-${String(this.currentMonth).padStart(2,'0')}`;
     const elHist = document.getElementById('history-month');
     const elRep = document.getElementById('report-month');
+    const elYear = document.getElementById('report-year');
+    
     if(elHist) elHist.value = mStr;
     if(elRep) elRep.value = mStr;
+    
+    // 填入年份選單 (前後 5 年)
+    if(elYear) {
+      let opts = '';
+      for(let y = this.currentYear - 2; y <= this.currentYear + 2; y++) {
+        opts += `<option value="${y}" ${y===this.currentYear?'selected':''}>${y}年</option>`;
+      }
+      elYear.innerHTML = opts;
+    }
 
     if (this.token) {
       this.verifyToken();
@@ -62,8 +73,29 @@ const App = {
     const histMonth = document.getElementById('history-month');
     if(histMonth) histMonth.onchange = (e) => Data.loadTransactions(e.target.value);
 
+    // --- 報表相關事件 ---
+    
+    // 1. 切換月報/年報
+    const toggleReportType = () => {
+      const isMonth = document.getElementById('rt-month').checked;
+      document.getElementById('report-month').classList.toggle('d-none', !isMonth);
+      document.getElementById('report-year').classList.toggle('d-none', isMonth);
+      Data.triggerLoadReport(); // 切換時自動重整
+    };
+    const rtMonth = document.getElementById('rt-month');
+    const rtYear = document.getElementById('rt-year');
+    if(rtMonth) rtMonth.onchange = toggleReportType;
+    if(rtYear) rtYear.onchange = toggleReportType;
+
+    // 2. 日期/年份改變時重整
     const repMonth = document.getElementById('report-month');
-    if(repMonth) repMonth.onchange = (e) => Data.loadReport(e.target.value);
+    if(repMonth) repMonth.onchange = () => Data.triggerLoadReport();
+    
+    const repYearSelect = document.getElementById('report-year');
+    if(repYearSelect) repYearSelect.onchange = () => Data.triggerLoadReport();
+
+    // 3. 下載 Excel
+    bind('btn-download-excel', () => Data.downloadExcel());
     
     bind('btn-refresh-admin', () => Data.loadAdmin());
   },
@@ -118,7 +150,6 @@ const App = {
     const f = input.files[0];
     if(!f) return;
     const r = new FileReader();
-    // 🔴 修正處：這裡原本是 fileName，改為 name，以便與 submitEntry 對應
     r.onload = e => this[targetVar] = { data: e.target.result, name: f.name, type: f.type };
     r.readAsDataURL(f);
   },
@@ -126,7 +157,6 @@ const App = {
   submitEntry: function() {
     if(!confirm("確定儲存?")) return;
     const f = UI.getForm('entry');
-    // 這裡會抓取 uploadFile.name，所以上面的 readFile 必須存為 .name
     f.fileData = this.uploadFile ? this.uploadFile.data : null;
     f.fileName = this.uploadFile ? this.uploadFile.name : null;
     f.mimeType = this.uploadFile ? this.uploadFile.type : null;
@@ -238,7 +268,7 @@ const UI = {
     if(targetDiv) targetDiv.classList.remove('d-none');
     
     if(tid==='view-history') Data.loadTransactions(document.getElementById('history-month').value);
-    if(tid==='view-report') Data.loadReport(document.getElementById('report-month').value);
+    if(tid==='view-report') Data.triggerLoadReport(); // 切換時讀取報表
     if(tid==='view-admin') Data.loadAdmin();
   },
 
@@ -282,17 +312,31 @@ const UI = {
     document.getElementById('rpt-income').textContent = d.income;
     document.getElementById('rpt-expense').textContent = d.expense;
     document.getElementById('rpt-balance').textContent = d.balance;
-    const box = document.getElementById('rpt-cats');
-    if(!d.categories.length) box.innerHTML = '<div class="text-center text-muted">無支出資料</div>';
-    else {
-      const max = d.categories[0].value || 1;
-      box.innerHTML = d.categories.map(c => `
+
+    // 條狀圖渲染 Helper
+    const renderBars = (containerId, list, colorClass) => {
+      const box = document.getElementById(containerId);
+      if(!list.length) { 
+        box.innerHTML = '<div class="text-center text-muted small py-3">無資料</div>'; 
+        return; 
+      }
+      const max = list[0].value || 1;
+      box.innerHTML = list.map(c => `
         <div class="mb-2">
-          <div class="d-flex justify-content-between small"><span>${c.name}</span><span>$${c.value}</span></div>
-          <div class="progress" style="height: 6px;"><div class="progress-bar bg-danger" style="width: ${(c.value/max)*100}%"></div></div>
+          <div class="d-flex justify-content-between small">
+            <span>${c.name}</span>
+            <span>$${c.value}</span>
+          </div>
+          <div class="progress" style="height: 6px;">
+            <div class="progress-bar ${colorClass}" style="width: ${(c.value/max)*100}%"></div>
+          </div>
         </div>
       `).join('');
-    }
+    };
+
+    // 分別渲染收入(綠色)與支出(紅色)
+    renderBars('rpt-cats-exp', d.categories, 'bg-danger');
+    renderBars('rpt-cats-inc', d.incomeCategories, 'bg-success');
   },
 
   renderAdmin: (d) => {
@@ -338,13 +382,57 @@ const Data = {
       .getTransactionsByMonth(App.token, y, m);
   },
 
-  loadReport: (ymStr) => {
-    if(!ymStr) return;
-    const [y, m] = ymStr.split('-');
+  // 取得目前報表參數 (年與月)
+  getReportParams: () => {
+    const isMonth = document.getElementById('rt-month').checked;
+    if (isMonth) {
+      const val = document.getElementById('report-month').value;
+      if(!val) return null;
+      const [y, m] = val.split('-');
+      return { y, m };
+    } else {
+      const y = document.getElementById('report-year').value;
+      return { y, m: 'ALL' };
+    }
+  },
+
+  // 觸發報表讀取
+  triggerLoadReport: () => {
+    const p = Data.getReportParams();
+    if(!p) return;
+    
+    // 簡單的 Loading 提示
+    document.getElementById('rpt-cats-inc').innerHTML = '<div class="text-center small">讀取中...</div>';
+    document.getElementById('rpt-cats-exp').innerHTML = '<div class="text-center small">讀取中...</div>';
+    
     google.script.run
-      .withSuccessHandler(UI.renderReport)
+      .withSuccessHandler(res => { UI.renderReport(res); })
       .withFailureHandler(UI.error)
-      .getReportData(App.token, y, m);
+      .getReportData(App.token, p.y, p.m);
+  },
+
+  // 下載 Excel
+  downloadExcel: () => {
+    const p = Data.getReportParams();
+    if(!p) return;
+    
+    const label = p.m === 'ALL' ? `${p.y}年全年度` : `${p.y}年${p.m}月`;
+    if(!confirm(`確定要下載 [${label}] 的報表嗎？`)) return;
+
+    UI.loading(true);
+    google.script.run
+      .withSuccessHandler(res => {
+        UI.loading(false);
+        // 建立隱藏連結並自動點擊
+        const a = document.createElement("a");
+        a.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," + res.base64;
+        a.download = res.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      })
+      .withFailureHandler(UI.error)
+      .downloadReportExcel(App.token, p.y, p.m);
   },
 
   delItem: (id) => {
