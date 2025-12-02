@@ -1,5 +1,5 @@
 /**
- * --- Code.gs : 後端核心與設定 (完整修復版 - 含年報與下載功能) ---
+ * --- Code.gs : 後端核心與設定 (完整修復版 - 含年報、明細下載功能) ---
  */
 
 const CONFIG = {
@@ -207,7 +207,7 @@ function deleteTransaction(token, id) {
   }
 }
 
-// 修改: 支援 "ALL" 作為 monthStr 以取得整年資料
+// 查詢交易 (支援 'ALL' 月份)
 function getTransactionsByMonth(token, yearStr, monthStr) {
   const check = verifyToken(token);
   if (!check.valid) throw new Error(check.message);
@@ -234,7 +234,7 @@ function getTransactionsByMonth(token, yearStr, monthStr) {
   }));
 }
 
-// 修改: 新增收入分類統計
+// 報表統計
 function getReportData(token, yearStr, monthStr) {
   const txs = getTransactionsByMonth(token, yearStr, monthStr);
   let income = 0, expense = 0;
@@ -261,12 +261,12 @@ function getReportData(token, yearStr, monthStr) {
     income, 
     expense, 
     balance: income - expense, 
-    categories: expStats,       // 支出分類
-    incomeCategories: incStats  // 收入分類 (新增)
+    categories: expStats,
+    incomeCategories: incStats
   };
 }
 
-// 新增: 產生並下載 Excel
+// 報表 Excel 下載
 function downloadReportExcel(token, yearStr, monthStr) {
   const user = verifyToken(token);
   if (!user.valid) throw new Error("權限不足");
@@ -274,11 +274,9 @@ function downloadReportExcel(token, yearStr, monthStr) {
   const data = getReportData(token, yearStr, monthStr);
   const title = `${yearStr}年${monthStr === 'ALL' ? '全年度' : monthStr + '月'}報表`;
   
-  // 建立暫存試算表
   const tempSS = SpreadsheetApp.create("Temp_" + Date.now());
   const sheet = tempSS.getSheets()[0];
   
-  // 寫入摘要
   sheet.getRange("A1").setValue(title).setFontSize(14).setFontWeight("bold");
   sheet.getRange("A2:B2").setValues([["項目", "金額"]]).setFontWeight("bold").setBackground("#efefef");
   sheet.getRange("A3:B5").setValues([
@@ -288,7 +286,6 @@ function downloadReportExcel(token, yearStr, monthStr) {
   ]);
 
   let row = 7;
-  // 寫入收入細項
   sheet.getRange(row, 1).setValue("【收入分類統計】").setFontWeight("bold").setFontColor("#198754");
   row++;
   if (data.incomeCategories.length > 0) {
@@ -301,7 +298,6 @@ function downloadReportExcel(token, yearStr, monthStr) {
     row++;
   }
 
-  // 寫入支出細項
   row++;
   sheet.getRange(row, 1).setValue("【支出分類統計】").setFontWeight("bold").setFontColor("#dc3545");
   row++;
@@ -315,24 +311,50 @@ function downloadReportExcel(token, yearStr, monthStr) {
     row++;
   }
 
-  // 匯出為 XLSX
   SpreadsheetApp.flush();
   const url = "https://docs.google.com/spreadsheets/d/" + tempSS.getId() + "/export?format=xlsx";
-  const options = {
-    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true
-  };
+  const options = { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, muteHttpExceptions: true };
   const response = UrlFetchApp.fetch(url, options);
   const blob = response.getBlob().setName(title + ".xlsx");
-  
-  // 刪除暫存檔
   DriveApp.getFileById(tempSS.getId()).setTrashed(true);
 
-  // 回傳 Base64 供前端下載
-  return { 
-    filename: title + ".xlsx", 
-    base64: Utilities.base64Encode(blob.getBytes()) 
-  };
+  return { filename: title + ".xlsx", base64: Utilities.base64Encode(blob.getBytes()) };
+}
+
+// ✅ [新功能] 明細 Excel 下載
+function downloadHistoryExcel(token, yearStr, monthStr) {
+  const user = verifyToken(token);
+  if (!user.valid) throw new Error("權限不足");
+
+  // 取得資料
+  const txs = getTransactionsByMonth(token, yearStr, monthStr);
+  const title = `${yearStr}年${monthStr === 'ALL' ? '全年度' : monthStr + '月'}_收支明細`;
+
+  // 建立暫存試算表
+  const tempSS = SpreadsheetApp.create("Temp_History_" + Date.now());
+  const sheet = tempSS.getSheets()[0];
+
+  // 設定標題列
+  const headers = ["日期", "類型", "金額", "主分類", "子分類", "支付方式", "備註", "圖片連結"];
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+       .setFontWeight("bold").setBackground("#cfe2ff");
+
+  // 填入資料
+  if (txs.length > 0) {
+    const rows = txs.map(t => [
+      t.date, t.type, Number(t.amount), t.category, t.subCategory, t.payment, t.memo, t.fileUrl
+    ]);
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  }
+
+  SpreadsheetApp.flush();
+  const url = "https://docs.google.com/spreadsheets/d/" + tempSS.getId() + "/export?format=xlsx";
+  const options = { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, muteHttpExceptions: true };
+  const response = UrlFetchApp.fetch(url, options);
+  const blob = response.getBlob().setName(title + ".xlsx");
+  DriveApp.getFileById(tempSS.getId()).setTrashed(true);
+
+  return { filename: title + ".xlsx", base64: Utilities.base64Encode(blob.getBytes()) };
 }
 
 /** --- Helpers --- */
@@ -383,11 +405,7 @@ function getDateFolder(rootFolder, dateStr) {
   return mF;
 }
 
-// --- 請貼在 Code.gs 最下方 ---
-
+// 強制授權函式 (如果還沒授權過，請在編輯器手動跑一次這個)
 function forceAuth() {
-  // 這個函式的唯一目的是強迫系統跳出授權視窗
-  // 隨便抓取一個網站，觸發 script.external_request 權限
   UrlFetchApp.fetch("https://www.google.com");
-  Logger.log("✅ 授權成功！現在請去建立新版部署！");
 }
