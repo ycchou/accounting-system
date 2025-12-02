@@ -1,9 +1,9 @@
 /**
- * --- Code.gs : 後端核心與設定 (完整修復版) ---
+ * --- Code.gs : 後端核心與設定 (完整修復版 - 含年報與下載功能) ---
  */
 
 const CONFIG = {
-  // 🔴【請填寫】您的 Google 試算表 ID (網址 /d/ 後面那一長串)
+  // 🔴【請填寫】您的 Google 試算表 ID
   SPREADSHEET_ID: "1EEut01ck5yRp-Hk0vV5SBgGZ4Sczap6nvnsd6iWjUnE", 
   
   // ✅【已填寫】您的 Google Drive 資料夾 ID
@@ -108,7 +108,7 @@ function adminUpdateUser(token, targetUid, action, newRole) {
   }
 }
 
-/** --- 交易資料管理 (已加入防呆與錯誤捕捉) --- */
+/** --- 交易資料管理 --- */
 
 function getSettingsData(token) {
   const check = verifyToken(token);
@@ -117,7 +117,7 @@ function getSettingsData(token) {
   return { types: getCol(d, 0), categories: getCol(d, 1), payments: getCol(d, 2) };
 }
 
-// 1. 新增交易 (安全版)
+// 1. 新增交易
 function saveTransaction(token, form) {
   try {
     const user = verifyToken(token);
@@ -126,7 +126,6 @@ function saveTransaction(token, form) {
 
     let fileInfo = { url: "", id: "" };
     
-    // 處理檔案上傳
     if (form.fileData) {
       try {
         fileInfo = uploadFile(form.fileData, form.fileName, form.mimeType, form.date);
@@ -147,7 +146,7 @@ function saveTransaction(token, form) {
   }
 }
 
-// 2. 更新交易 (安全版)
+// 2. 更新交易
 function updateTransaction(token, id, form) {
   try {
     const user = verifyToken(token);
@@ -208,6 +207,7 @@ function deleteTransaction(token, id) {
   }
 }
 
+// 修改: 支援 "ALL" 作為 monthStr 以取得整年資料
 function getTransactionsByMonth(token, yearStr, monthStr) {
   const check = verifyToken(token);
   if (!check.valid) throw new Error(check.message);
@@ -218,7 +218,13 @@ function getTransactionsByMonth(token, yearStr, monthStr) {
 
   const filtered = data.slice(1).filter(r => {
     const d = new Date(r[1]);
-    return d.getFullYear() == yearStr && (d.getMonth() + 1) == monthStr;
+    const isYearMatch = d.getFullYear() == yearStr;
+    
+    if (monthStr === 'ALL') {
+      return isYearMatch;
+    } else {
+      return isYearMatch && (d.getMonth() + 1) == monthStr;
+    }
   });
 
   return filtered.reverse().map(r => ({
@@ -228,22 +234,105 @@ function getTransactionsByMonth(token, yearStr, monthStr) {
   }));
 }
 
+// 修改: 新增收入分類統計
 function getReportData(token, yearStr, monthStr) {
   const txs = getTransactionsByMonth(token, yearStr, monthStr);
-  let income = 0, expense = 0, catMap = {};
+  let income = 0, expense = 0;
+  let expMap = {};
+  let incMap = {};
 
   txs.forEach(t => {
     const amt = Number(t.amount);
-    if (t.type === '收入') income += amt;
-    else if (t.type === '支出') {
+    if (t.type === '收入') {
+      income += amt;
+      if (!incMap[t.category]) incMap[t.category] = 0;
+      incMap[t.category] += amt;
+    } else if (t.type === '支出') {
       expense += amt;
-      if (!catMap[t.category]) catMap[t.category] = 0;
-      catMap[t.category] += amt;
+      if (!expMap[t.category]) expMap[t.category] = 0;
+      expMap[t.category] += amt;
     }
   });
 
-  const catStats = Object.keys(catMap).map(k => ({ name: k, value: catMap[k] })).sort((a, b) => b.value - a.value);
-  return { income, expense, balance: income - expense, categories: catStats };
+  const expStats = Object.keys(expMap).map(k => ({ name: k, value: expMap[k] })).sort((a, b) => b.value - a.value);
+  const incStats = Object.keys(incMap).map(k => ({ name: k, value: incMap[k] })).sort((a, b) => b.value - a.value);
+
+  return { 
+    income, 
+    expense, 
+    balance: income - expense, 
+    categories: expStats,       // 支出分類
+    incomeCategories: incStats  // 收入分類 (新增)
+  };
+}
+
+// 新增: 產生並下載 Excel
+function downloadReportExcel(token, yearStr, monthStr) {
+  const user = verifyToken(token);
+  if (!user.valid) throw new Error("權限不足");
+
+  const data = getReportData(token, yearStr, monthStr);
+  const title = `${yearStr}年${monthStr === 'ALL' ? '全年度' : monthStr + '月'}報表`;
+  
+  // 建立暫存試算表
+  const tempSS = SpreadsheetApp.create("Temp_" + Date.now());
+  const sheet = tempSS.getSheets()[0];
+  
+  // 寫入摘要
+  sheet.getRange("A1").setValue(title).setFontSize(14).setFontWeight("bold");
+  sheet.getRange("A2:B2").setValues([["項目", "金額"]]).setFontWeight("bold").setBackground("#efefef");
+  sheet.getRange("A3:B5").setValues([
+    ["總收入", data.income],
+    ["總支出", data.expense],
+    ["結餘", data.balance]
+  ]);
+
+  let row = 7;
+  // 寫入收入細項
+  sheet.getRange(row, 1).setValue("【收入分類統計】").setFontWeight("bold").setFontColor("#198754");
+  row++;
+  if (data.incomeCategories.length > 0) {
+    data.incomeCategories.forEach(c => {
+      sheet.getRange(row, 1, 1, 2).setValues([[c.name, c.value]]);
+      row++;
+    });
+  } else {
+    sheet.getRange(row, 1).setValue("(無收入資料)");
+    row++;
+  }
+
+  // 寫入支出細項
+  row++;
+  sheet.getRange(row, 1).setValue("【支出分類統計】").setFontWeight("bold").setFontColor("#dc3545");
+  row++;
+  if (data.categories.length > 0) {
+    data.categories.forEach(c => {
+      sheet.getRange(row, 1, 1, 2).setValues([[c.name, c.value]]);
+      row++;
+    });
+  } else {
+    sheet.getRange(row, 1).setValue("(無支出資料)");
+    row++;
+  }
+
+  // 匯出為 XLSX
+  SpreadsheetApp.flush();
+  const url = "https://docs.google.com/spreadsheets/d/" + tempSS.getId() + "/export?format=xlsx";
+  const options = {
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  };
+  const response = UrlFetchApp.fetch(url, options);
+  const blob = response.getBlob().setName(title + ".xlsx");
+  
+  // 刪除暫存檔
+  DriveApp.getFileById(tempSS.getId()).setTrashed(true);
+
+  // 回傳 Base64 供前端下載
+  return { 
+    filename: title + ".xlsx", 
+    base64: Utilities.base64Encode(blob.getBytes()) 
+  };
 }
 
 /** --- Helpers --- */
@@ -262,29 +351,16 @@ function formatDate(d) { return Utilities.formatDate(new Date(d), Session.getScr
 function generateHash(input, salt) { return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, input + salt).map(b=>(b<0?b+256:b).toString(16).padStart(2,'0')).join(''); }
 function generateSalt(len) { let s="";const c="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";for(let i=0;i<len;i++)s+=c.charAt(Math.floor(Math.random()*c.length));return s;}
 
-// 3. 上傳檔案邏輯 (自動分類日期資料夾)
 function uploadFile(base64, name, mime, dateStr) {
   try {
-    // 取得根目錄
     const root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID);
-    
-    // 取得日期資料夾
     const folder = getDateFolder(root, dateStr);
-    
-    // 解碼 Base64
     const blob = Utilities.newBlob(Utilities.base64Decode(base64.split(',')[1]), mime, name);
-    
-    // 重新命名: YYYYMMDD_Timestamp.ext
     const ext = name.split('.').pop();
     const newName = `${dateStr.replace(/-/g,"")}_${Date.now().toString().slice(-6)}.${ext}`;
     blob.setName(newName);
-    
-    // 建立檔案
     const file = folder.createFile(blob);
-    
-    // 設定權限 (選擇性，設為知道連結者可檢視，避免破圖)
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    
     return { url: file.getUrl(), id: file.getId() };
   } catch(e) {
     throw new Error("資料夾存取失敗: " + e.message);
@@ -307,26 +383,11 @@ function getDateFolder(rootFolder, dateStr) {
   return mF;
 }
 
-/** --- 手動建立 Admin 工具 --- */
-function createAdminAccount() {
-  const adminEmail = "admin@example.com"; 
-  const adminPassword = "password123";    
-  const adminName = "超級管理員";           
+// --- 請貼在 Code.gs 最下方 ---
 
-  const sheet = getSheet(CONFIG.SHEET_NAMES.USERS);
-  const data = sheet.getDataRange().getValues();
-
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][1] === adminEmail) {
-      Logger.log("❌ 帳號已存在");
-      return;
-    }
-  }
-
-  const salt = generateSalt(10);
-  const hash = generateHash(adminPassword, salt);
-  const uuid = Utilities.getUuid();
-  
-  sheet.appendRow([uuid, adminEmail, adminName, hash, salt, 'Admin', '', '', new Date()]);
-  Logger.log("✅ Admin 建立成功: " + adminEmail);
+function forceAuth() {
+  // 這個函式的唯一目的是強迫系統跳出授權視窗
+  // 隨便抓取一個網站，觸發 script.external_request 權限
+  UrlFetchApp.fetch("https://www.google.com");
+  Logger.log("✅ 授權成功！現在請去建立新版部署！");
 }
