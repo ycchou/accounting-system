@@ -1,0 +1,382 @@
+<script>
+/** 
+ * 修正版前端邏輯 (v2.1)
+ * 修復圖片上傳時「找不到 split」的錯誤 (修正變數名稱 mismatch)
+ */
+const App = {
+  token: localStorage.getItem("authToken"),
+  user: null,
+  uploadFile: null,
+  editFile: null,
+  
+  currentYear: new Date().getFullYear(),
+  currentMonth: new Date().getMonth() + 1,
+
+  init: function() {
+    this.bindEvents();
+    
+    const mStr = `${this.currentYear}-${String(this.currentMonth).padStart(2,'0')}`;
+    const elHist = document.getElementById('history-month');
+    const elRep = document.getElementById('report-month');
+    if(elHist) elHist.value = mStr;
+    if(elRep) elRep.value = mStr;
+
+    if (this.token) {
+      this.verifyToken();
+    } else {
+      UI.showPage('auth');
+    }
+  },
+
+  bindEvents: function() {
+    const bind = (id, fn) => {
+      const el = document.getElementById(id);
+      if(el) el.onclick = (e) => { e.preventDefault(); fn(e); };
+    };
+
+    bind('link-to-register', () => UI.toggleAuth('register'));
+    bind('link-to-login', () => UI.toggleAuth('login'));
+    bind('btn-login', () => this.auth('loginUser'));
+    bind('btn-register', () => this.auth('handleRegister'));
+    
+    bind('btn-logout', () => { 
+      localStorage.removeItem("authToken"); 
+      location.reload(); 
+    });
+
+    const formEntry = document.getElementById('form-entry');
+    if(formEntry) formEntry.onsubmit = (e) => { e.preventDefault(); this.submitEntry(); };
+
+    const entryFile = document.getElementById('entry-file');
+    if(entryFile) entryFile.onchange = (e) => this.readFile(e.target, 'uploadFile');
+
+    bind('btn-save-edit', () => this.submitEdit());
+    
+    const editFile = document.getElementById('edit-file');
+    if(editFile) editFile.onchange = (e) => this.readFile(e.target, 'editFile');
+
+    document.querySelectorAll('.nav-link').forEach(btn => {
+      btn.onclick = (e) => { e.preventDefault(); UI.switchTab(e.currentTarget); };
+    });
+
+    const histMonth = document.getElementById('history-month');
+    if(histMonth) histMonth.onchange = (e) => Data.loadTransactions(e.target.value);
+
+    const repMonth = document.getElementById('report-month');
+    if(repMonth) repMonth.onchange = (e) => Data.loadReport(e.target.value);
+    
+    bind('btn-refresh-admin', () => Data.loadAdmin());
+  },
+
+  verifyToken: function() {
+    UI.loading(true);
+    google.script.run
+      .withSuccessHandler(res => {
+        UI.loading(false);
+        if (res.valid) { 
+          this.user = res; 
+          UI.initDashboard(res); 
+        } else {
+          localStorage.removeItem("authToken");
+          UI.showPage('auth');
+        }
+      })
+      .withFailureHandler(UI.error)
+      .verifyToken(this.token);
+  },
+
+  auth: function(method) {
+    const isLogin = method === 'loginUser';
+    const email = document.getElementById(isLogin ? 'login-email' : 'reg-email').value;
+    const pass = document.getElementById(isLogin ? 'login-password' : 'reg-password').value;
+    const name = !isLogin ? document.getElementById('reg-name').value : null;
+    
+    if(!email || !pass) { alert("請輸入完整資料"); return; }
+
+    UI.loading(true);
+    google.script.run
+      .withSuccessHandler(res => {
+        UI.loading(false);
+        if (res.success) {
+          if(isLogin) { 
+            localStorage.setItem("authToken", res.token); 
+            this.token = res.token; 
+            this.verifyToken(); 
+          } else { 
+            alert(res.message); 
+            UI.toggleAuth('login'); 
+          }
+        } else {
+          alert(res.message);
+        }
+      })
+      .withFailureHandler(UI.error)
+      [method](email, pass, name);
+  },
+
+  readFile: function(input, targetVar) {
+    const f = input.files[0];
+    if(!f) return;
+    const r = new FileReader();
+    // 🔴 修正處：這裡原本是 fileName，改為 name，以便與 submitEntry 對應
+    r.onload = e => this[targetVar] = { data: e.target.result, name: f.name, type: f.type };
+    r.readAsDataURL(f);
+  },
+
+  submitEntry: function() {
+    if(!confirm("確定儲存?")) return;
+    const f = UI.getForm('entry');
+    // 這裡會抓取 uploadFile.name，所以上面的 readFile 必須存為 .name
+    f.fileData = this.uploadFile ? this.uploadFile.data : null;
+    f.fileName = this.uploadFile ? this.uploadFile.name : null;
+    f.mimeType = this.uploadFile ? this.uploadFile.type : null;
+    
+    UI.loading(true);
+    google.script.run
+      .withSuccessHandler(res => {
+        UI.loading(false);
+        alert(res.message);
+        if(res.success) { 
+          document.getElementById('form-entry').reset(); 
+          this.uploadFile=null; 
+          document.getElementById('entry-date').valueAsDate=new Date(); 
+        }
+      })
+      .withFailureHandler(UI.error)
+      .saveTransaction(this.token, f);
+  },
+
+  prepareEdit: function(rowJson) {
+    const r = JSON.parse(decodeURIComponent(rowJson));
+    const setValue = (id, v) => { const el = document.getElementById(id); if(el) el.value = v; };
+    
+    setValue('edit-id', r.id);
+    setValue('edit-date', r.date);
+    setValue('edit-type', r.type);
+    setValue('edit-amount', r.amount);
+    setValue('edit-category', r.category);
+    setValue('edit-sub', r.subCategory);
+    setValue('edit-payment', r.payment);
+    setValue('edit-memo', r.memo);
+    
+    this.editFile = null; 
+    setValue('edit-file', "");
+    
+    const modalEl = document.getElementById('modal-edit');
+    if(modalEl) {
+      const modal = new bootstrap.Modal(modalEl);
+      modal.show();
+    }
+  },
+
+  submitEdit: function() {
+    if(!confirm("確定更新此筆資料?")) return;
+    const id = document.getElementById('edit-id').value;
+    const f = UI.getForm('edit');
+    if (this.editFile) {
+      f.fileData = this.editFile.data;
+      f.fileName = this.editFile.name;
+      f.mimeType = this.editFile.type;
+    }
+
+    UI.loading(true);
+    google.script.run
+      .withSuccessHandler(res => {
+        UI.loading(false);
+        alert(res.message);
+        if(res.success) {
+          const modalEl = document.getElementById('modal-edit');
+          const modal = bootstrap.Modal.getInstance(modalEl);
+          if(modal) modal.hide();
+          Data.loadTransactions(document.getElementById('history-month').value);
+        }
+      })
+      .withFailureHandler(UI.error)
+      .updateTransaction(this.token, id, f);
+  }
+};
+
+const UI = {
+  loading: (s) => {
+    const overlay = document.getElementById('loading-overlay');
+    if(overlay) overlay.classList.toggle('d-none', !s);
+  },
+  
+  error: (e) => { 
+    UI.loading(false); 
+    console.error(e);
+    alert("系統發生錯誤: " + e.message); 
+  },
+  
+  showPage: (p) => {
+    document.getElementById('page-auth').classList.toggle('d-none', p!=='auth');
+    document.getElementById('page-dashboard').classList.toggle('d-none', p!=='dashboard');
+  },
+  toggleAuth: (m) => {
+    document.getElementById('form-login').classList.toggle('d-none', m!=='login');
+    document.getElementById('form-register').classList.toggle('d-none', m!=='register');
+  },
+
+  initDashboard: (u) => {
+    UI.showPage('dashboard');
+    document.getElementById('display-username').textContent = u.name;
+    document.getElementById('display-role').textContent = u.role;
+    if(u.role==='Admin') {
+      const navAdmin = document.getElementById('nav-admin');
+      if(navAdmin) navAdmin.classList.remove('d-none');
+    }
+    document.getElementById('entry-date').valueAsDate = new Date();
+    Data.loadSettings();
+  },
+
+  switchTab: (btn) => {
+    document.querySelectorAll('.nav-link').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.view-section').forEach(v=>v.classList.add('d-none'));
+    const tid = btn.getAttribute('data-target');
+    const targetDiv = document.getElementById(tid);
+    if(targetDiv) targetDiv.classList.remove('d-none');
+    
+    if(tid==='view-history') Data.loadTransactions(document.getElementById('history-month').value);
+    if(tid==='view-report') Data.loadReport(document.getElementById('report-month').value);
+    if(tid==='view-admin') Data.loadAdmin();
+  },
+
+  getForm: (prefix) => ({
+    date: document.getElementById(prefix+'-date').value,
+    type: document.getElementById(prefix+'-type').value,
+    amount: document.getElementById(prefix+'-amount').value,
+    category: document.getElementById(prefix+'-category').value,
+    subCategory: document.getElementById(prefix+'-sub').value,
+    payment: document.getElementById(prefix+'-payment').value,
+    memo: document.getElementById(prefix+'-memo').value
+  }),
+
+  popSel: (ids, list) => ids.forEach(id => {
+    const el = document.getElementById(id);
+    if(el) {
+      const val = el.value; 
+      el.innerHTML='<option value="">請選擇</option>'+list.map(i=>`<option value="${i}">${i}</option>`).join('');
+      if(val) el.value = val;
+    }
+  }),
+
+  renderHistory: (d) => {
+    const tb = document.getElementById('tbody-history');
+    if(!d.length) { tb.innerHTML='<tr><td colspan="3" class="text-center text-muted">無資料</td></tr>'; return; }
+    tb.innerHTML = d.map(r => {
+      const json = encodeURIComponent(JSON.stringify(r));
+      const img = r.fileUrl ? `<a href="${r.fileUrl}" target="_blank"><i class="fas fa-image"></i></a>` : '';
+      return `<tr>
+        <td>${r.date}<br><span class="badge bg-light text-dark border">${r.category}</span> <small>${r.subCategory||''}</small></td>
+        <td class="fw-bold">$${r.amount} ${img}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-primary" onclick="App.prepareEdit('${json}')"><i class="fas fa-edit"></i></button>
+          <button class="btn btn-sm btn-outline-danger" onclick="Data.delItem('${r.id}')"><i class="fas fa-trash"></i></button>
+        </td>
+      </tr>`;
+    }).join('');
+  },
+
+  renderReport: (d) => {
+    document.getElementById('rpt-income').textContent = d.income;
+    document.getElementById('rpt-expense').textContent = d.expense;
+    document.getElementById('rpt-balance').textContent = d.balance;
+    const box = document.getElementById('rpt-cats');
+    if(!d.categories.length) box.innerHTML = '<div class="text-center text-muted">無支出資料</div>';
+    else {
+      const max = d.categories[0].value || 1;
+      box.innerHTML = d.categories.map(c => `
+        <div class="mb-2">
+          <div class="d-flex justify-content-between small"><span>${c.name}</span><span>$${c.value}</span></div>
+          <div class="progress" style="height: 6px;"><div class="progress-bar bg-danger" style="width: ${(c.value/max)*100}%"></div></div>
+        </div>
+      `).join('');
+    }
+  },
+
+  renderAdmin: (d) => {
+    document.getElementById('tbody-admin').innerHTML = d.map(u => {
+      const isSelf = u.id === App.user.uid;
+      let btns = '';
+      if(!isSelf) {
+        const delBtn = `<button class="btn btn-sm btn-danger ms-1" onclick="Data.adminUpdate('${u.id}','delete','')"><i class="fas fa-trash"></i></button>`;
+        if(u.role==='Pending') btns = `<button class="btn btn-sm btn-success" onclick="Data.adminUpdate('${u.id}','update','Editor')">准</button>` + delBtn;
+        else if(u.role!=='Admin') {
+           const next = u.role==='Editor'?'Viewer':'Editor';
+           btns = `<button class="btn btn-sm btn-outline-secondary" onclick="Data.adminUpdate('${u.id}','update','${next}')">轉${next}</button>` + delBtn;
+        } else {
+           btns = delBtn;
+        }
+      } else {
+        btns = '<span class="text-muted small">自己</span>';
+      }
+      return `<tr><td>${u.name}<br><small>${u.username}</small></td><td>${u.role}</td><td>${btns}</td></tr>`;
+    }).join('');
+  }
+};
+
+const Data = {
+  loadSettings: () => google.script.run
+    .withSuccessHandler(res => {
+      App.settings = res;
+      UI.popSel(['entry-type','edit-type'], res.types);
+      UI.popSel(['entry-category','edit-category'], res.categories);
+      UI.popSel(['entry-payment','edit-payment'], res.payments);
+    })
+    .withFailureHandler(UI.error)
+    .getSettingsData(App.token),
+
+  loadTransactions: (ymStr) => {
+    if(!ymStr) return;
+    const [y, m] = ymStr.split('-');
+    const tb = document.getElementById('tbody-history');
+    if(tb) tb.innerHTML='<tr><td colspan="3" class="text-center">載入中...</td></tr>';
+    google.script.run
+      .withSuccessHandler(UI.renderHistory)
+      .withFailureHandler(UI.error)
+      .getTransactionsByMonth(App.token, y, m);
+  },
+
+  loadReport: (ymStr) => {
+    if(!ymStr) return;
+    const [y, m] = ymStr.split('-');
+    google.script.run
+      .withSuccessHandler(UI.renderReport)
+      .withFailureHandler(UI.error)
+      .getReportData(App.token, y, m);
+  },
+
+  delItem: (id) => {
+    if(!confirm("確定刪除?")) return;
+    UI.loading(true);
+    google.script.run
+      .withSuccessHandler(res => {
+        UI.loading(false);
+        Data.loadTransactions(document.getElementById('history-month').value);
+      })
+      .withFailureHandler(UI.error)
+      .deleteTransaction(App.token, id);
+  },
+
+  loadAdmin: () => google.script.run
+    .withSuccessHandler(UI.renderAdmin)
+    .withFailureHandler(UI.error)
+    .getAllUsers(App.token),
+  
+  adminUpdate: (uid, act, role) => {
+    if(!confirm(act==='delete'?"確定刪除此使用者?":"確定變更權限?")) return;
+    UI.loading(true);
+    google.script.run
+      .withSuccessHandler(res => {
+        UI.loading(false);
+        alert(res.message);
+        Data.loadAdmin();
+      })
+      .withFailureHandler(UI.error)
+      .adminUpdateUser(App.token, uid, act, role);
+  }
+};
+
+window.onload = () => App.init();
+</script>
