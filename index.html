@@ -101,7 +101,7 @@
           </form>
         </div>
 
-        <!-- 2. 明細 (CRUD: Read/Delete/Edit) -->
+        <!-- 2. 明細 -->
         <div id="view-history" class="view-section card p-3 d-none">
           <div class="d-flex justify-content-between align-items-center mb-2">
             <h5 class="m-0">明細查詢</h5>
@@ -116,21 +116,51 @@
           </div>
         </div>
 
-        <!-- 3. 報表 -->
+        <!-- 3. 報表 (已更新：支援年報、收入統計、下載) -->
         <div id="view-report" class="view-section card p-3 d-none">
           <div class="d-flex justify-content-between align-items-center mb-3">
-            <h5 class="m-0">月報表</h5>
-            <input type="month" id="report-month" class="form-control form-control-sm" style="width:150px;">
+            <h5 class="m-0">財務報表</h5>
+            <button class="btn btn-sm btn-outline-success" id="btn-download-excel">
+              <i class="fas fa-file-excel"></i> 下載 Excel
+            </button>
+          </div>
+
+          <!-- 控制列：切換年/月 -->
+          <div class="row g-2 align-items-center mb-3 bg-light p-2 rounded">
+            <div class="col-auto">
+              <div class="btn-group btn-group-sm" role="group">
+                <input type="radio" class="btn-check" name="reportType" id="rt-month" autocomplete="off" checked>
+                <label class="btn btn-outline-primary" for="rt-month">月報</label>
+                <input type="radio" class="btn-check" name="reportType" id="rt-year" autocomplete="off">
+                <label class="btn btn-outline-primary" for="rt-year">年報</label>
+              </div>
+            </div>
+            <div class="col">
+              <!-- 月報選擇器 -->
+              <input type="month" id="report-month" class="form-control form-control-sm">
+              <!-- 年報選擇器 (預設隱藏) -->
+              <select id="report-year" class="form-select form-select-sm d-none"></select>
+            </div>
           </div>
           
           <div class="row text-center mb-4">
-            <div class="col-4"><h6 class="text-success">收入</h6><span id="rpt-income" class="fw-bold">0</span></div>
-            <div class="col-4"><h6 class="text-danger">支出</h6><span id="rpt-expense" class="fw-bold">0</span></div>
-            <div class="col-4"><h6 class="text-primary">結餘</h6><span id="rpt-balance" class="fw-bold">0</span></div>
+            <div class="col-4"><h6 class="text-success">總收入</h6><span id="rpt-income" class="fw-bold fs-5">0</span></div>
+            <div class="col-4"><h6 class="text-danger">總支出</h6><span id="rpt-expense" class="fw-bold fs-5">0</span></div>
+            <div class="col-4"><h6 class="text-primary">結餘</h6><span id="rpt-balance" class="fw-bold fs-5">0</span></div>
           </div>
 
-          <h6 class="border-bottom pb-2">支出分類統計</h6>
-          <div id="rpt-cats" class="mt-2"></div>
+          <div class="row">
+            <!-- 收入統計 -->
+            <div class="col-md-6 mb-3">
+              <h6 class="border-bottom pb-2 text-success"><i class="fas fa-arrow-down"></i> 收入分類</h6>
+              <div id="rpt-cats-inc" class="mt-2"></div>
+            </div>
+            <!-- 支出統計 -->
+            <div class="col-md-6 mb-3">
+              <h6 class="border-bottom pb-2 text-danger"><i class="fas fa-arrow-up"></i> 支出分類</h6>
+              <div id="rpt-cats-exp" class="mt-2"></div>
+            </div>
+          </div>
         </div>
 
         <!-- 4. 管理 -->
