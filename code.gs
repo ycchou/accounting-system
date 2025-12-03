@@ -1,5 +1,5 @@
 /**
- * --- Code.gs : 後端核心與設定 (完整修復版 - 含年報、明細下載功能) ---
+ * --- Code.gs : 後端核心與設定 (完整修復版 - 含年報、明細下載、自動檔名命名) ---
  */
 
 const CONFIG = {
@@ -117,7 +117,7 @@ function getSettingsData(token) {
   return { types: getCol(d, 0), categories: getCol(d, 1), payments: getCol(d, 2) };
 }
 
-// 1. 新增交易
+// 1. 新增交易 (含自動命名邏輯)
 function saveTransaction(token, form) {
   try {
     const user = verifyToken(token);
@@ -128,7 +128,16 @@ function saveTransaction(token, form) {
     
     if (form.fileData) {
       try {
-        fileInfo = uploadFile(form.fileData, form.fileName, form.mimeType, form.date);
+        fileInfo = uploadFile(
+          form.fileData, 
+          form.fileName, 
+          form.mimeType, 
+          form.date,
+          form.type, 
+          form.category, 
+          form.subCategory, 
+          form.amount
+        );
       } catch (e) {
         return { success: false, message: "圖片上傳失敗，請檢查資料夾權限或 ID。錯誤: " + e.message };
       }
@@ -146,7 +155,7 @@ function saveTransaction(token, form) {
   }
 }
 
-// 2. 更新交易
+// 2. 更新交易 (含自動命名邏輯)
 function updateTransaction(token, id, form) {
   try {
     const user = verifyToken(token);
@@ -167,7 +176,16 @@ function updateTransaction(token, id, form) {
 
     if (form.fileData) {
       try {
-        const newFile = uploadFile(form.fileData, form.fileName, form.mimeType, form.date);
+        const newFile = uploadFile(
+          form.fileData, 
+          form.fileName, 
+          form.mimeType, 
+          form.date,
+          form.type, 
+          form.category, 
+          form.subCategory, 
+          form.amount
+        );
         fileUrl = newFile.url;
         fileId = newFile.id;
       } catch(e) {
@@ -321,7 +339,7 @@ function downloadReportExcel(token, yearStr, monthStr) {
   return { filename: title + ".xlsx", base64: Utilities.base64Encode(blob.getBytes()) };
 }
 
-// ✅ [新功能] 明細 Excel 下載
+// 明細 Excel 下載
 function downloadHistoryExcel(token, yearStr, monthStr) {
   const user = verifyToken(token);
   if (!user.valid) throw new Error("權限不足");
@@ -373,14 +391,34 @@ function formatDate(d) { return Utilities.formatDate(new Date(d), Session.getScr
 function generateHash(input, salt) { return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, input + salt).map(b=>(b<0?b+256:b).toString(16).padStart(2,'0')).join(''); }
 function generateSalt(len) { let s="";const c="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";for(let i=0;i<len;i++)s+=c.charAt(Math.floor(Math.random()*c.length));return s;}
 
-function uploadFile(base64, name, mime, dateStr) {
+// 檔案上傳核心 (修改版：依規則命名)
+function uploadFile(base64, name, mime, dateStr, type, category, sub, amount) {
   try {
     const root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID);
     const folder = getDateFolder(root, dateStr);
+    
     const blob = Utilities.newBlob(Utilities.base64Decode(base64.split(',')[1]), mime, name);
+    
+    // --- 檔名產生邏輯 ---
+    const d = new Date(dateStr);
+    const ymd = Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyyMMdd");
+    
+    let finalAmount = Number(amount);
+    if (type === '支出') {
+      finalAmount = -Math.abs(finalAmount);
+    } else {
+      finalAmount = Math.abs(finalAmount);
+    }
+
+    const cleanCat = category.replace(/[\\/:*?"<>|]/g, ""); 
+    const cleanSub = (sub || "").replace(/[\\/:*?"<>|]/g, "");
+    
     const ext = name.split('.').pop();
-    const newName = `${dateStr.replace(/-/g,"")}_${Date.now().toString().slice(-6)}.${ext}`;
+    const newName = `${ymd}_${cleanCat}_${cleanSub}_${finalAmount}.${ext}`;
+    
     blob.setName(newName);
+    // ------------------
+
     const file = folder.createFile(blob);
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     return { url: file.getUrl(), id: file.getId() };
@@ -405,7 +443,7 @@ function getDateFolder(rootFolder, dateStr) {
   return mF;
 }
 
-// 強制授權函式 (如果還沒授權過，請在編輯器手動跑一次這個)
+// 強制授權函式
 function forceAuth() {
   UrlFetchApp.fetch("https://www.google.com");
 }
